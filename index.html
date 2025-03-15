@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Light Control Panel</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        font-family: "Roboto", sans-serif;
+      }
+
+      body {
+        min-height: 100vh;
+        background: linear-gradient(135deg, #1e3c72, #2a5298);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        color: #fff;
+      }
+
+      .container {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        padding: 2rem;
+        border-radius: 20px;
+        box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        width: 90%;
+        max-width: 400px;
+        text-align: center;
+      }
+
+      h1 {
+        margin-bottom: 1.5rem;
+        font-size: 2rem;
+        font-weight: 500;
+      }
+
+      .status-container {
+        margin: 1.5rem 0;
+        padding: 1rem;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .connection-status {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+
+      .status-indicator {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ff4444;
+        transition: background-color 0.3s ease;
+      }
+
+      .status-indicator.connected {
+        background: #00c851;
+      }
+
+      .controls {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        margin: 2rem 0;
+      }
+
+      button {
+        padding: 1rem 2rem;
+        border: none;
+        border-radius: 50px;
+        cursor: pointer;
+        font-size: 1rem;
+        font-weight: 500;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        color: white;
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+      }
+
+      #onBtn {
+        background: #00c851;
+      }
+
+      #offBtn {
+        background: #ff4444;
+      }
+
+      .status-message {
+        padding: 1rem;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.05);
+        margin-top: 1rem;
+      }
+
+      .light-icon {
+        font-size: 3rem;
+        margin: 1rem 0;
+        transition: opacity 0.3s ease;
+      }
+
+      .light-icon.off {
+        opacity: 0.3;
+      }
+
+      @keyframes pulse {
+        0% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.05);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      .pulse {
+        animation: pulse 1s infinite;
+      }
+
+      .error-message {
+        color: #ff4444;
+        margin-top: 1rem;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Smart Light Control Panel</h1>
+
+      <div class="status-container">
+        <div class="connection-status">
+          <div class="status-indicator" id="connectionIndicator"></div>
+          <span id="connectionText">Connecting...</span>
+        </div>
+      </div>
+
+      <div class="light-icon" id="lightIcon">💡</div>
+
+      <div class="controls">
+        <button id="onBtn">TURN ON</button>
+        <button id="offBtn">TURN OFF</button>
+      </div>
+
+      <div class="status-message" id="status">Waiting for connection...</div>
+      <div class="error-message" id="errorMsg"></div>
+    </div>
+
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script>
+      const connectionIndicator = document.getElementById(
+        "connectionIndicator"
+      );
+      const connectionText = document.getElementById("connectionText");
+      const lightIcon = document.getElementById("lightIcon");
+      const statusElement = document.getElementById("status");
+      const errorMsg = document.getElementById("errorMsg");
+
+      let lastCommand = "";
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
+
+      const updateConnectionStatus = (connected, message) => {
+        connectionIndicator.className =
+          "status-indicator " + (connected ? "connected" : "");
+        connectionText.textContent = message;
+      };
+
+      const updateLightStatus = (isOn) => {
+        lightIcon.className = "light-icon " + (isOn ? "pulse" : "off");
+      };
+
+      const showError = (message) => {
+        errorMsg.textContent = message;
+        setTimeout(() => {
+          errorMsg.textContent = "";
+        }, 5000);
+      };
+
+      // MQTT Configuration
+      const mqttConfig = {
+        hostname: "broker.emqx.io",
+        port: 8083,
+        clientId: "web_controller_" + Math.random().toString(16).substr(2, 8),
+        path: "/mqtt",
+        protocol: "ws",
+        keepalive: 60,
+        reconnectPeriod: 5000,
+        clean: true,
+      };
+
+      const topic = "/student_group/light_control";
+      let client;
+
+      function connectMQTT() {
+        try {
+          const url = `${mqttConfig.protocol}://${mqttConfig.hostname}:${mqttConfig.port}${mqttConfig.path}`;
+          console.log("Connecting to:", url);
+          client = mqtt.connect(url, {
+            ...mqttConfig,
+            will: {
+              topic: topic,
+              payload: "Web controller disconnected",
+              qos: 1,
+              retain: false,
+            },
+          });
+
+          client.on("connect", () => {
+            console.log("Connected to MQTT broker");
+            updateConnectionStatus(true, "Connected");
+            reconnectAttempts = 0;
+
+            // Subscribe to the topic to receive messages from the Python simulator
+            client.subscribe(topic, (err) => {
+              if (err) {
+                console.error("Subscribe error:", err);
+                showError("Failed to subscribe to topic");
+              } else {
+                console.log("Subscribed to topic:", topic);
+                // Send initial state request
+                client.publish(topic + "/request", "STATUS");
+              }
+            });
+          });
+
+          client.on("error", (error) => {
+            console.error("Connection error:", error);
+            updateConnectionStatus(false, "Connection Error");
+            showError("Failed to connect to MQTT broker: " + error.message);
+          });
+
+          client.on("offline", () => {
+            console.log("Client went offline");
+            updateConnectionStatus(false, "Offline");
+            if (reconnectAttempts < maxReconnectAttempts) {
+              reconnectAttempts++;
+              console.log(
+                `Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})`
+              );
+              setTimeout(connectMQTT, 5000);
+            } else {
+              showError(
+                "Maximum reconnection attempts reached. Please refresh the page."
+              );
+            }
+          });
+
+          client.on("close", () => {
+            console.log("Connection closed");
+            updateConnectionSttus(false, "Disconnected");
+          });
+
+          client.on("reconnect", () => {
+            console.log("Attempting to reconnect...");
+            updateConnectionStatus(false, "Reconnecting...");
+          });
+
+          client.on("message", (topic, message) => {
+            const payload = message.toString();
+            console.log("Received message:", payload);
+
+            // Handle different types of messages
+            if (payload === "ON" || payload === "OFF") {
+              statusElement.textContent = `Light is: ${payload}`;
+              updateLightStatus(payload === "ON");
+            } else if (payload.includes("disconnected")) {
+              showError("Light simulator disconnected");
+            } else if (payload.includes("Light simulator")) {
+              console.log("Simulator message:", payload);
+            }
+          });
+        } catch (error) {
+          console.error("MQTT Connection error:", error);
+          showError("Failed to establish MQTT connection");
+        }
+      }
+
+      function publishMessage(message) {
+        if (!client || !client.connected) {
+          showError("Not connected to MQTT broker");
+          return;
+        }
+
+        try {
+          client.publish(topic, message);
+          lastCommand = message;
+          statusElement.textContent = `Sent: ${message}`;
+          updateLightStatus(message === "ON");
+        } catch (error) {
+          console.error("Publishing error:", error);
+          showError("Failed to send command");
+        }
+      }
+
+      // Connect to MQTT broker
+      connectMQTT();
+
+      // Button Event Listeners
+      document.getElementById("onBtn").addEventListener("click", () => {
+        publishMessage("ON");
+      });
+
+      document.getElementById("offBtn").addEventListener("click", () => {
+        publishMessage("OFF");
+      });
+    </script>
+  </body>
+</html>
